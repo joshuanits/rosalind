@@ -1,6 +1,8 @@
 from collections import OrderedDict
 from enum import Enum
 import itertools
+from multiprocessing import Value
+import math
 
 def read_rosalind(name: str) -> list[str]:
     with open(f"rosalind_{name}.txt") as f:
@@ -81,6 +83,29 @@ RNA_CODON = {
     "GGG":  "G",
 }
 
+PROTEIN_MASSES = {
+    "A": 71.03711,
+    "C": 103.00919,
+    "D": 115.02694,
+    "E": 129.04259,
+    "F": 147.06841,
+    "G": 57.02146,
+    "H": 137.05891,
+    "I": 113.08406,
+    "K": 128.09496,
+    "L": 113.08406,
+    "M": 131.04049,
+    "N": 114.04293,
+    "P": 97.05276,
+    "Q": 128.05858,
+    "R": 156.10111,
+    "S": 87.03203,
+    "T": 101.04768,
+    "V": 99.06841,
+    "W": 186.07931,
+    "Y": 163.06333,
+}
+
 class SequenceType(Enum):
     UNKNOWN = {}
     DNA = {'A', 'C', 'G', 'T'}
@@ -144,6 +169,32 @@ class Sequence(str):
 
         return Sequence(result)
     
+    @property
+    def mass(self) -> float:
+        if self.sequence_type != SequenceType.PROTEIN:
+            raise NotImplementedError(f"mass not implemented for sequence type {self.sequence_type} ")
+        
+        return sum([PROTEIN_MASSES[i] for i in self])
+    
+    @property
+    def n_possible_rna_strings(self):
+        if self.sequence_type != SequenceType.PROTEIN:
+            raise NotImplementedError(f"mass not implemented for sequence type {self.sequence_type} ")
+        
+        codon_counts = {}
+        for symbol in RNA_CODON.values():
+            codon_counts[symbol] = codon_counts.get(symbol, 0) + 1
+        
+        result = 1
+
+        for char in self:
+            result *= codon_counts[char]
+
+        result *= codon_counts['Stop']
+
+        return result
+             
+    
     def sub_locations(self, other: 'Sequence') -> list[int]:
         result = []
         for i in range(0, len(self) - len(other)):
@@ -151,6 +202,26 @@ class Sequence(str):
                 result.append(i+1)
 
         return result
+    
+    def common_substrings(self, other: 'Sequence') -> set['Sequence']:
+        result = set()
+
+        for i in range(len(self)):
+            for j in range(len(other)):
+                substring = ""
+                n = 0
+
+                while i+n < len(self) and j+n < len(other) and self[i+n] == other[j+n]:
+                    # print(len(self), len(other), i, j, n)
+                    substring += self[i+n]
+                    result.add(Sequence(substring))
+                    n += 1
+
+                # if substring:
+                #     result.add(Sequence(substring))
+
+        return result
+
 
     def hamming_distance(self, other: 'Sequence') -> int:
         if len(self) != len(other):
@@ -165,6 +236,14 @@ class Sequence(str):
 
     def overlaps(self, other: 'Sequence', length: int) -> bool:
         return self[-length:] == other[:length]
+    
+    def probability_random_matches(self, gc_ratio: float) -> bool:
+        result = 1
+
+        for char in self:
+            result *= (gc_ratio if char in ['G', 'C'] else 1 - gc_ratio) / 2
+
+        return math.log10(result)
     
     def __infer_sequence_type(self) -> SequenceType:
         symbols = self.symbols_count.keys()
@@ -192,6 +271,70 @@ class FASTA(OrderedDict[str | None, Sequence]):
 
         return result
 
+    @property
+    def profile_matrix(self) -> dict[str, list[int]]:
+        sequence_lengths = {len(s) for s in self.values()}
+
+        if len(sequence_lengths) > 1:
+            raise ValueError(f"Unable to find profile matrix, sequences have multiple lengths {sequence_lengths}")
+        
+        sequence_length = sequence_lengths.pop()
+
+        result = {k: [0] * sequence_length for k in ['A', 'C', 'G', 'T']}
+
+        for sequence in self.values():
+            for i in range(sequence_length):
+                result[sequence[i]][i] += 1
+
+        return result
+    
+    @property
+    def consensus_string(self) -> Sequence:
+        profile_matrix = self.profile_matrix
+        result = Sequence("")
+
+        for i in range(len(profile_matrix['A'])):
+            max_symbol = ''
+            max_value = -1
+
+            for symbol in ['A', 'C', 'G', 'T']:
+                value = profile_matrix[symbol][i]
+                if value > max_value:
+                    max_value = value
+                    max_symbol = symbol
+            
+            result += max_symbol
+        
+        return result
+
+    @property
+    def common_substrings(self) -> set[Sequence]:
+        sequences = list(self.values())
+
+        if len(sequences) == 1:
+            raise ValueError('Unable to find common_substrings from collection of 1 sequence')
+        
+        substrings = sequences[0].common_substrings(sequences[1])
+
+        if len(sequences) > 2:
+            for sequence in sequences:
+                substrings = {s for s in substrings if s in sequence}
+
+        return substrings
+    
+    @property
+    def longest_common_substring(self) -> Sequence:
+        substrings = self.common_substrings
+
+        longest_sequence = None
+        longest_length = -1
+
+        for substring in substrings:
+            if len(substring) > longest_length:
+                longest_sequence = substring
+                longest_length = len(substring)
+        
+        return longest_sequence
 
     @staticmethod
     def parse(text) -> 'FASTA':
@@ -231,6 +374,7 @@ class FASTA(OrderedDict[str | None, Sequence]):
         with open(file_path) as f:
             return FASTA.parse(f.read())
         
+    
     @staticmethod
     def from_rosalind(name: str) -> 'FASTA':
         return FASTA.from_file(f"rosalind_{name}.txt")
